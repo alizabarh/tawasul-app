@@ -207,14 +207,21 @@ export default function App() {
     });
   };
 
+  // 1. إدارة المصادقة (Auth) مع حل مشكلة Custom Token Mismatch
   useEffect(() => {
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
+          try {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } catch (tokenErr) {
+            console.warn("Custom token invalid or mismatched, falling back to anonymous login...");
+            await signInAnonymously(auth);
+          }
         } else {
           await signInAnonymously(auth);
         }
+        setAuthError(null);
       } catch (err) { 
         console.error("Firebase Auth Initialization Failed:", err.code);
         setAuthError(err.code);
@@ -227,6 +234,7 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
+        // استخدام مسار Firestore الصحيح حسب القاعدة رقم 1
         const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
         try {
           const userSnap = await getDoc(userRef);
@@ -252,21 +260,25 @@ export default function App() {
     return () => unsubscribe();
   }, [language]);
 
+  // 2. مستمعات البيانات في الوقت الفعلي
   useEffect(() => {
     if (!user) return;
 
+    // جلب التغريدات العامة
     const tweetsCol = collection(db, 'artifacts', appId, 'public', 'data', 'tweets');
     const unsubTweets = onSnapshot(tweetsCol, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setTweets(list.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
     }, (err) => console.error("Tweets listener error:", err));
 
+    // جلب قائمة المستخدمين للاقتراحات
     const usersCol = collection(db, 'artifacts', appId, 'public', 'data', 'all_users');
     const unsubUsers = onSnapshot(usersCol, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setUsersList(list.filter(u => u.id !== user.uid));
     }, (err) => console.error("Users list listener error:", err));
 
+    // جلب قائمة المتابعين
     const followingCol = collection(db, 'artifacts', appId, 'users', user.uid, 'following');
     const unsubFollow = onSnapshot(followingCol, (snap) => {
       setFollowingIds(snap.docs.map(d => d.id));
@@ -275,6 +287,7 @@ export default function App() {
     return () => { unsubTweets(); unsubUsers(); unsubFollow(); };
   }, [user]);
 
+  // تحديث البيانات العامة
   useEffect(() => {
     if (!user) return;
     const updatePublic = async () => {
@@ -439,6 +452,7 @@ export default function App() {
   return (
     <div className={`min-h-screen transition-all duration-500 ${isDarkMode ? 'bg-[#09142A] text-white' : 'bg-[#F0F2F5] text-gray-900'}`} dir={isRtl ? 'rtl' : 'ltr'}>
       
+      {/* عناصر الرفع المخفية */}
       <input type="file" hidden ref={tweetFileRef} accept="image/*" onChange={(e) => onFileChange(e.target.files[0], setNewTweetImage, 1000)} />
       <input type="file" hidden ref={avatarFileRef} accept="image/*" onChange={(e) => onFileChange(e.target.files[0], (r) => setProfileData({...profileData, avatar: r}), 300)} />
       <input type="file" hidden ref={headerFileRef} accept="image/*" onChange={(e) => onFileChange(e.target.files[0], (r) => setProfileData({...profileData, header: r}), 1200)} />
