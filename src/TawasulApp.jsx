@@ -45,11 +45,19 @@ import {
   Upload,
   X,
   Send,
-  Users
+  Users,
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 
 /**
- * تحديث: تم ربط التطبيق بإعدادات Firebase الخاصة بك: tawasulapp-ed2cc
+ * 🛠️ تنبيه هام لحل خطأ (auth/configuration-not-found):
+ * 1. اذهب إلى Firebase Console (https://console.firebase.google.com).
+ * 2. اختر مشروعك "tawasulapp-ed2cc".
+ * 3. من القائمة الجانبية اختر Build > Authentication.
+ * 4. اذهب إلى تبويب Sign-in method.
+ * 5. اضغط على Add new provider واختر "Anonymous".
+ * 6. قم بتفعيل الخيار (Enable) ثم اضغط Save.
  */
 
 // --- إعدادات Firebase الخاصة بك ---
@@ -67,9 +75,15 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+// تهيئة Analytics بشكل آمن
 let analytics = null;
 if (typeof window !== "undefined") {
-  analytics = getAnalytics(app);
+  try {
+    analytics = getAnalytics(app);
+  } catch (e) {
+    console.warn("Analytics error:", e.message);
+  }
 }
 
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'tawasul-prod-v1';
@@ -103,7 +117,10 @@ const translations = {
     writeComment: "اكتب تعليقك...",
     noTweets: "لا توجد تغريدات بعد.",
     noFriends: "لا يوجد مستخدمون مقترحون.",
-    whatHappening: "ماذا يدور في ذهنك؟"
+    whatHappening: "ماذا يدور في ذهنك؟",
+    authErrorTitle: "مطلوب إعداد إضافي في Firebase",
+    authErrorMessage: "يجب تفعيل 'Anonymous Sign-in' في لوحة تحكم Firebase ليعمل التطبيق.",
+    loading: "جاري التحميل..."
   },
   en: {
     home: "Home",
@@ -132,15 +149,20 @@ const translations = {
     writeComment: "Write a comment...",
     noTweets: "No tweets yet.",
     noFriends: "No suggested users.",
-    whatHappening: "What's happening?"
+    whatHappening: "What's happening?",
+    authErrorTitle: "Firebase Setup Required",
+    authErrorMessage: "You must enable 'Anonymous Sign-in' in your Firebase Console to start.",
+    loading: "Loading..."
   }
 };
 
 export default function App() {
   const [user, setUser] = useState(null);
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [authError, setAuthError] = useState(null);
   const [profileData, setProfileData] = useState({ 
     name: "مستخدم تواصل", 
-    bio: "أهلاً بك في منصة تواصل الاجتماعية", 
+    bio: "أهلاً بك في تواصل", 
     avatar: "https://i.pravatar.cc/150?u=tawasul", 
     header: "https://images.unsplash.com/photo-1557683316-973673baf926?w=1200" 
   });
@@ -193,7 +215,12 @@ export default function App() {
         } else {
           await signInAnonymously(auth);
         }
-      } catch (err) { console.error(err); }
+      } catch (err) { 
+        console.error("Firebase Auth Initialization Failed:", err.code);
+        setAuthError(err.code);
+      } finally {
+        setIsInitializing(false);
+      }
     };
     initAuth();
 
@@ -201,14 +228,25 @@ export default function App() {
       if (currentUser) {
         setUser(currentUser);
         const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
-        const userSnap = await getDoc(userRef);
-        if (userSnap.exists()) {
-          setProfileData(userSnap.data());
-        } else {
-          const initial = { ...profileData, name: language === 'ar' ? "مستخدم جديد" : "New User" };
-          await setDoc(userRef, initial);
-          setProfileData(initial);
+        try {
+          const userSnap = await getDoc(userRef);
+          if (userSnap.exists()) {
+            setProfileData(userSnap.data());
+          } else {
+            const initial = { 
+              name: language === 'ar' ? "مستخدم جديد" : "New User",
+              bio: "أهلاً بك في منصة تواصل الاجتماعية", 
+              avatar: `https://i.pravatar.cc/150?u=${currentUser.uid}`, 
+              header: "https://images.unsplash.com/photo-1557683316-973673baf926?w=1200" 
+            };
+            await setDoc(userRef, initial);
+            setProfileData(initial);
+          }
+        } catch (e) {
+          console.error("Profile fetch error:", e);
         }
+      } else {
+        setUser(null);
       }
     });
     return () => unsubscribe();
@@ -216,22 +254,23 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
+
     const tweetsCol = collection(db, 'artifacts', appId, 'public', 'data', 'tweets');
     const unsubTweets = onSnapshot(tweetsCol, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setTweets(list.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
-    });
+    }, (err) => console.error("Tweets listener error:", err));
 
     const usersCol = collection(db, 'artifacts', appId, 'public', 'data', 'all_users');
     const unsubUsers = onSnapshot(usersCol, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setUsersList(list.filter(u => u.id !== user.uid));
-    });
+    }, (err) => console.error("Users list listener error:", err));
 
     const followingCol = collection(db, 'artifacts', appId, 'users', user.uid, 'following');
     const unsubFollow = onSnapshot(followingCol, (snap) => {
       setFollowingIds(snap.docs.map(d => d.id));
-    });
+    }, (err) => console.error("Following list error:", err));
 
     return () => { unsubTweets(); unsubUsers(); unsubFollow(); };
   }, [user]);
@@ -239,8 +278,10 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     const updatePublic = async () => {
-      const ref = doc(db, 'artifacts', appId, 'public', 'data', 'all_users', user.uid);
-      await setDoc(ref, { id: user.uid, ...profileData }, { merge: true });
+      try {
+        const ref = doc(db, 'artifacts', appId, 'public', 'data', 'all_users', user.uid);
+        await setDoc(ref, { id: user.uid, ...profileData }, { merge: true });
+      } catch (e) { console.error("Public info update error:", e); }
     };
     updatePublic();
   }, [profileData, user]);
@@ -256,7 +297,7 @@ export default function App() {
   };
 
   const postTweet = async () => {
-    if (!newTweetText.trim() || loading) return;
+    if (!newTweetText.trim() || loading || !user) return;
     setLoading(true);
     try {
       const col = collection(db, 'artifacts', appId, 'public', 'data', 'tweets');
@@ -275,23 +316,23 @@ export default function App() {
       setNewTweetText("");
       setNewTweetImage("");
       setShowTweetModal(false);
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error("Post error:", e); }
     setLoading(false);
   };
 
   const handleUpdateProfile = async () => {
-    if (!user) return;
+    if (!user || loading) return;
     setLoading(true);
     try {
       const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
       await updateDoc(ref, profileData);
       setView('profile');
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error("Update error:", e); }
     setLoading(false);
   };
 
   const addComment = async () => {
-    if (!commentText.trim() || !selectedTweet) return;
+    if (!commentText.trim() || !selectedTweet || !user) return;
     const ref = doc(db, 'artifacts', appId, 'public', 'data', 'tweets', selectedTweet.id);
     const newReply = {
       userId: user.uid,
@@ -317,9 +358,40 @@ export default function App() {
   const openTweetDetail = async (tweet) => {
     setSelectedTweet(tweet);
     setView('tweetDetail');
-    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'tweets', tweet.id);
-    await updateDoc(ref, { views: increment(1) });
+    if (user) {
+      const ref = doc(db, 'artifacts', appId, 'public', 'data', 'tweets', tweet.id);
+      await updateDoc(ref, { views: increment(1) });
+    }
   };
+
+  if (isInitializing) {
+    return (
+      <div className="min-h-screen bg-[#09142A] flex flex-col items-center justify-center text-white p-6 text-center">
+        <Loader2 className="w-12 h-12 text-[#38B6FF] animate-spin mb-4" />
+        <p className="text-xl font-bold">{t.loading}</p>
+      </div>
+    );
+  }
+
+  if (authError === 'auth/configuration-not-found') {
+    return (
+      <div className="min-h-screen bg-[#09142A] flex items-center justify-center p-6" dir={isRtl ? 'rtl' : 'ltr'}>
+        <div className="max-w-md w-full bg-white rounded-3xl p-8 shadow-2xl text-center">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-6">
+            <AlertCircle className="text-red-500 w-10 h-10" />
+          </div>
+          <h2 className="text-2xl font-black text-gray-900 mb-4">{t.authErrorTitle}</h2>
+          <p className="text-gray-600 mb-8 leading-relaxed">{t.authErrorMessage}</p>
+          <div className="bg-gray-50 p-4 rounded-2xl text-start text-sm text-gray-700 space-y-2 border border-gray-100">
+            <p className="font-bold border-b pb-1 mb-2">خطوات الحل:</p>
+            <p>1. اذهب لـ Firebase Console.</p>
+            <p>2. اذهب لـ Authentication {' > '} Sign-in method.</p>
+            <p>3. فعّل خيار <strong>Anonymous</strong>.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const TweetItem = ({ tweet }) => (
     <article onClick={() => openTweetDetail(tweet)} className="p-5 border-b border-gray-500/10 hover:bg-gray-500/5 cursor-pointer transition-colors group">
@@ -330,7 +402,7 @@ export default function App() {
             <span className="font-black text-[16px] hover:underline">{tweet.userName}</span>
             <span className="text-gray-500 text-sm">@{tweet.userId?.substring(0, 5)}</span>
           </div>
-          <p className="text-[17px] leading-relaxed mb-3">{tweet.text}</p>
+          <p className="text-[17px] leading-relaxed mb-3 whitespace-pre-wrap">{tweet.text}</p>
           {tweet.tweetImage && (
             <div className="rounded-2xl overflow-hidden border border-gray-500/10 mb-4 max-h-[400px]">
               <img src={tweet.tweetImage} className="w-full h-full object-cover" alt="media" />
@@ -338,9 +410,25 @@ export default function App() {
           )}
           <div className="flex justify-between text-gray-500 max-w-md">
             <button className="flex items-center gap-2 hover:text-[#38B6FF] transition-colors"><MessageCircle size={19} /> {tweet.replies?.length || 0}</button>
-            <button onClick={(e) => {e.stopPropagation(); updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tweets', tweet.id), {retweets: increment(1)})}} className="flex items-center gap-2 hover:text-green-500"><Repeat2 size={19} /> {tweet.retweets || 0}</button>
-            <button onClick={(e) => {e.stopPropagation(); updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tweets', tweet.id), {likes: increment(1)})}} className={`flex items-center gap-2 ${tweet.likes > 0 ? 'text-red-500' : ''}`}><Heart size={19} className={tweet.likes > 0 ? "fill-current" : ""} /> {tweet.likes}</button>
-            <div className="flex items-center gap-2"><BarChart3 size={19} /> <span className="text-xs">{tweet.views}</span></div>
+            <button 
+              onClick={(e) => {
+                e.stopPropagation(); 
+                if (user) updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tweets', tweet.id), {retweets: increment(1)});
+              }} 
+              className="flex items-center gap-2 hover:text-green-500 transition-colors"
+            >
+              <Repeat2 size={19} /> {tweet.retweets || 0}
+            </button>
+            <button 
+              onClick={(e) => {
+                e.stopPropagation(); 
+                if (user) updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tweets', tweet.id), {likes: increment(1)});
+              }} 
+              className={`flex items-center gap-2 transition-colors ${tweet.likes > 0 ? 'text-red-500' : 'hover:text-red-500'}`}
+            >
+              <Heart size={19} className={tweet.likes > 0 ? "fill-current" : ""} /> {tweet.likes}
+            </button>
+            <div className="flex items-center gap-2 text-xs"><BarChart3 size={17} /> {tweet.views || 0}</div>
             <Share size={19} />
           </div>
         </div>
@@ -396,7 +484,12 @@ export default function App() {
                 <div className="flex gap-4">
                   <img src={profileData.avatar} className="w-12 h-12 rounded-full object-cover shadow-sm" alt="me" />
                   <div className="flex-1">
-                    <textarea value={newTweetText} onChange={e => setNewTweetText(e.target.value)} placeholder={t.whatHappening} className="w-full bg-transparent text-xl outline-none resize-none h-20 placeholder:text-gray-500" />
+                    <textarea 
+                      value={newTweetText} 
+                      onChange={e => setNewTweetText(e.target.value)} 
+                      placeholder={t.whatHappening} 
+                      className="w-full bg-transparent text-xl outline-none resize-none h-20 placeholder:text-gray-500" 
+                    />
                     {newTweetImage && (
                       <div className="relative mt-2 rounded-2xl overflow-hidden mb-4 border border-gray-500/20 shadow-md">
                         <img src={newTweetImage} className="w-full max-h-72 object-cover" alt="prev" />
@@ -405,7 +498,7 @@ export default function App() {
                     )}
                     <div className="flex justify-between items-center border-t border-gray-500/10 pt-4 mt-2">
                       <button onClick={() => tweetFileRef.current?.click()} className="text-[#38B6FF] hover:bg-[#38B6FF]/10 p-2 rounded-full transition-all"><ImageIcon size={22} /></button>
-                      <button onClick={postTweet} disabled={!newTweetText.trim() || loading} className={`px-8 py-2 rounded-full font-bold shadow-lg transition-all ${newTweetText.trim() ? 'bg-[#38B6FF] text-white active:scale-95' : 'bg-gray-500/20 text-gray-400'}`}>
+                      <button onClick={postTweet} disabled={!newTweetText.trim() || loading || !user} className={`px-8 py-2 rounded-full font-bold shadow-lg transition-all ${newTweetText.trim() && user ? 'bg-[#38B6FF] text-white active:scale-95' : 'bg-gray-500/20 text-gray-400'}`}>
                         {loading ? '...' : t.post}
                       </button>
                     </div>
@@ -433,6 +526,7 @@ export default function App() {
                     </button>
                   </div>
                 ))}
+                {usersList.length === 0 && <p className="text-center py-20 text-gray-500">{t.noFriends}</p>}
               </div>
             </div>
           )}
@@ -458,6 +552,7 @@ export default function App() {
               </div>
               <div className="mt-10 divide-y divide-gray-500/10 border-t border-gray-500/10">
                 {tweets.filter(tw => tw.userId === user?.uid).map(tweet => <TweetItem key={tweet.id} tweet={tweet} />)}
+                {tweets.filter(tw => tw.userId === user?.uid).length === 0 && <p className="text-center py-20 text-gray-500">{t.noTweets}</p>}
               </div>
             </div>
           )}
@@ -487,7 +582,7 @@ export default function App() {
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-widest">{t.bio}</label>
                   <textarea value={profileData.bio} onChange={e => setProfileData({...profileData, bio: e.target.value})} className={`w-full p-3 rounded-xl border h-24 outline-none focus:border-[#38B6FF] transition-all ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-200'}`} />
                 </div>
-                <button onClick={handleUpdateProfile} disabled={loading} className="w-full bg-[#38B6FF] text-white py-4 rounded-2xl font-black shadow-xl hover:shadow-[#38B6FF]/30 active:scale-95 transition-all">{loading ? '...' : t.save}</button>
+                <button onClick={handleUpdateProfile} disabled={loading || !user} className="w-full bg-[#38B6FF] text-white py-4 rounded-2xl font-black shadow-xl hover:shadow-[#38B6FF]/30 active:scale-95 transition-all">{loading ? '...' : t.save}</button>
               </div>
             </div>
           )}
@@ -499,21 +594,21 @@ export default function App() {
                    <img src={selectedTweet.avatar} className="w-14 h-14 rounded-full border-2 border-[#38B6FF] object-cover shadow-md" alt="a" />
                    <div><p className="font-black text-lg">{selectedTweet.userName}</p><p className="text-gray-500 text-sm">@{selectedTweet.userId?.substring(0,6)}</p></div>
                 </div>
-                <p className="text-2xl leading-snug mb-6 font-medium">{selectedTweet.text}</p>
+                <p className="text-2xl leading-snug mb-6 font-medium whitespace-pre-wrap">{selectedTweet.text}</p>
                 {selectedTweet.tweetImage && <img src={selectedTweet.tweetImage} className="w-full rounded-3xl mb-6 shadow-sm border border-gray-500/10" alt="m" />}
                 <div className="py-4 border-y border-gray-500/10 flex gap-8 text-gray-500 text-xs font-bold uppercase tracking-widest">
-                  <span><strong>{selectedTweet.views}</strong> {t.views}</span>
-                  <span><strong>{selectedTweet.likes}</strong> {language === 'ar' ? 'إعجاب' : 'Likes'}</span>
-                  <span><strong>{selectedTweet.replies?.length || 0}</strong> {t.replies}</span>
+                  <span><strong className={isDarkMode ? 'text-white' : 'text-black'}>{selectedTweet.views || 0}</strong> {t.views}</span>
+                  <span><strong className={isDarkMode ? 'text-white' : 'text-black'}>{selectedTweet.likes || 0}</strong> {language === 'ar' ? 'إعجاب' : 'Likes'}</span>
+                  <span><strong className={isDarkMode ? 'text-white' : 'text-black'}>{selectedTweet.replies?.length || 0}</strong> {t.replies}</span>
                 </div>
                 <div className="mt-8 flex gap-4">
                   <img src={profileData.avatar} className="w-10 h-10 rounded-full object-cover" alt="me" />
                   <div className="flex-1 relative">
                     <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)} placeholder={t.writeComment} className={`w-full p-4 pr-12 rounded-2xl border outline-none focus:border-[#38B6FF] transition-all ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-100 border-gray-200'}`} onKeyPress={e => e.key === 'Enter' && addComment()} />
-                    <button onClick={addComment} className="absolute left-3 top-3 text-[#38B6FF] p-1 hover:bg-[#38B6FF]/10 rounded-full transition-colors"><Send size={20} className={isRtl ? 'rotate-180' : ''} /></button>
+                    <button onClick={addComment} disabled={!user} className="absolute left-3 top-3 text-[#38B6FF] p-1 hover:bg-[#38B6FF]/10 rounded-full transition-colors"><Send size={20} className={isRtl ? 'rotate-180' : ''} /></button>
                   </div>
                 </div>
-                <div className="mt-8 space-y-6">
+                <div className="mt-8 space-y-6 pb-10">
                   {(selectedTweet.replies || []).map((reply, i) => (
                     <div key={i} className="flex gap-4 animate-in fade-in">
                       <img src={reply.avatar} className="w-10 h-10 rounded-full object-cover shadow-sm" alt="r" />
@@ -531,16 +626,16 @@ export default function App() {
       </div>
 
       <nav className={`md:hidden fixed bottom-0 left-0 right-0 p-4 border-t flex justify-around backdrop-blur-md z-40 ${isDarkMode ? 'bg-[#09142A]/90 border-gray-800 shadow-[0_-5px_20px_rgba(0,0,0,0.5)]' : 'bg-white/90 border-gray-200 shadow-xl'}`}>
-        <Home onClick={() => setView('feed')} className={view === 'feed' ? 'text-[#38B6FF] scale-110' : 'text-gray-400'} size={26} />
-        <Users onClick={() => setView('friends')} className={view === 'friends' ? 'text-[#38B6FF] scale-110' : 'text-gray-400'} size={26} />
+        <Home onClick={() => setView('feed')} className={view === 'feed' ? 'text-[#38B6FF]' : 'text-gray-400'} size={26} />
+        <Users onClick={() => setView('friends')} className={view === 'friends' ? 'text-[#38B6FF]' : 'text-gray-400'} size={26} />
         <PlusCircle onClick={() => setShowTweetModal(true)} className="text-[#38B6FF]" size={32} />
-        <User onClick={() => setView('profile')} className={view === 'profile' ? 'text-[#38B6FF] scale-110' : 'text-gray-400'} size={26} />
-        <Settings onClick={() => setView('dashboard')} className={view === 'dashboard' ? 'text-[#38B6FF] scale-110' : 'text-gray-400'} size={26} />
+        <User onClick={() => setView('profile')} className={view === 'profile' ? 'text-[#38B6FF]' : 'text-gray-400'} size={26} />
+        <Settings onClick={() => setView('dashboard')} className={view === 'dashboard' ? 'text-[#38B6FF]' : 'text-gray-400'} size={26} />
       </nav>
 
       {showTweetModal && (
         <div className="fixed inset-0 z-[100] bg-black/70 flex items-start justify-center pt-20 backdrop-blur-md p-4 animate-in fade-in">
-           <div className={`w-full max-w-xl rounded-3xl shadow-2xl p-6 ${isDarkMode ? 'bg-[#09142A] border border-gray-800' : 'bg-white'}`}><div className="flex justify-between items-center mb-6"><button onClick={() => setShowTweetModal(false)} className="text-gray-500 p-2 hover:bg-red-500/10 rounded-full transition-colors"><X size={28} /></button><button onClick={postTweet} disabled={!newTweetText.trim() || loading} className="bg-[#38B6FF] text-white px-8 py-2 rounded-full font-black shadow-lg transition-transform active:scale-95">{loading ? '...' : t.post}</button></div><div className="flex gap-4"><img src={profileData.avatar} className="w-12 h-12 rounded-full object-cover shadow-sm" alt="av" /><div className="flex-1"><textarea autoFocus value={newTweetText} onChange={e => setNewTweetText(e.target.value)} className="w-full bg-transparent text-xl outline-none resize-none min-h-[150px] placeholder:text-gray-500" placeholder={t.whatHappening} />{newTweetImage && (<div className="relative mt-2 rounded-2xl overflow-hidden mb-4 shadow-xl border border-gray-500/10"><img src={newTweetImage} className="w-full max-h-60 object-cover" alt="p" /><button onClick={() => setNewTweetImage("")} className="absolute top-2 right-2 p-1.5 bg-black/60 text-white rounded-full hover:bg-red-500 transition-colors"><X size={16}/></button></div>)}<button onClick={() => tweetFileRef.current?.click()} className="mt-4 text-[#38B6FF] hover:bg-[#38B6FF]/10 p-2 rounded-full transition-all"><ImageIcon size={24} /></button></div></div></div>
+           <div className={`w-full max-w-xl rounded-3xl shadow-2xl p-6 ${isDarkMode ? 'bg-[#09142A] border border-gray-800' : 'bg-white'}`}><div className="flex justify-between items-center mb-6"><button onClick={() => setShowTweetModal(false)} className="text-gray-500 p-2 hover:bg-red-500/10 rounded-full transition-colors"><X size={28} /></button><button onClick={postTweet} disabled={!newTweetText.trim() || loading || !user} className="bg-[#38B6FF] text-white px-8 py-2 rounded-full font-black shadow-lg transition-transform active:scale-95">{loading ? '...' : t.post}</button></div><div className="flex gap-4"><img src={profileData.avatar} className="w-12 h-12 rounded-full object-cover shadow-sm" alt="av" /><div className="flex-1"><textarea autoFocus value={newTweetText} onChange={e => setNewTweetText(e.target.value)} className="w-full bg-transparent text-xl outline-none resize-none min-h-[150px] placeholder:text-gray-500" placeholder={t.whatHappening} />{newTweetImage && (<div className="relative mt-2 rounded-2xl overflow-hidden mb-4 shadow-xl border border-gray-500/10"><img src={newTweetImage} className="w-full max-h-60 object-cover" alt="p" /><button onClick={() => setNewTweetImage("")} className="absolute top-2 right-2 p-1.5 bg-black/60 text-white rounded-full hover:bg-red-500 transition-colors"><X size={16}/></button></div>)}<button onClick={() => tweetFileRef.current?.click()} className="mt-4 text-[#38B6FF] hover:bg-[#38B6FF]/10 p-2 rounded-full transition-all"><ImageIcon size={24} /></button></div></div></div>
         </div>
       )}
     </div>
