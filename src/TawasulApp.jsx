@@ -47,17 +47,14 @@ import {
   Send,
   Users,
   AlertCircle,
-  Loader2
+  Loader2,
+  FileQuestion
 } from 'lucide-react';
 
 /**
- * 🛠️ تنبيه هام لحل خطأ (auth/configuration-not-found):
- * 1. اذهب إلى Firebase Console (https://console.firebase.google.com).
- * 2. اختر مشروعك "tawasulapp-ed2cc".
- * 3. من القائمة الجانبية اختر Build > Authentication.
- * 4. اذهب إلى تبويب Sign-in method.
- * 5. اضغط على Add new provider واختر "Anonymous".
- * 6. قم بتفعيل الخيار (Enable) ثم اضغط Save.
+ * 🛠️ حل مشكلة 404 والارتباط بـ Vercel/Firebase:
+ * 1. إذا كنت تستخدم Vercel، تأكد من وجود ملف vercel.json في جذر المشروع لإعادة التوجيه (Rewrites).
+ * 2. تم إضافة معالجة ذكية في هذا الكود للتحقق من وجود الوثائق قبل عرضها لتجنب أخطاء NOT_FOUND.
  */
 
 // --- إعدادات Firebase الخاصة بك ---
@@ -120,7 +117,9 @@ const translations = {
     whatHappening: "ماذا يدور في ذهنك؟",
     authErrorTitle: "مطلوب إعداد إضافي في Firebase",
     authErrorMessage: "يجب تفعيل 'Anonymous Sign-in' في لوحة تحكم Firebase ليعمل التطبيق.",
-    loading: "جاري التحميل..."
+    loading: "جاري التحميل...",
+    notFoundTitle: "المورد غير موجود (404)",
+    notFoundMessage: "عذراً، التغريدة أو الصفحة التي تبحث عنها غير موجودة أو تم حذفها."
   },
   en: {
     home: "Home",
@@ -152,7 +151,9 @@ const translations = {
     whatHappening: "What's happening?",
     authErrorTitle: "Firebase Setup Required",
     authErrorMessage: "You must enable 'Anonymous Sign-in' in your Firebase Console to start.",
-    loading: "Loading..."
+    loading: "Loading...",
+    notFoundTitle: "Resource Not Found (404)",
+    notFoundMessage: "Sorry, the tweet or page you are looking for does not exist or has been deleted."
   }
 };
 
@@ -207,7 +208,7 @@ export default function App() {
     });
   };
 
-  // 1. إدارة المصادقة (Auth) مع حل مشكلة Custom Token Mismatch
+  // 1. إدارة المصادقة (Auth)
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -215,7 +216,6 @@ export default function App() {
           try {
             await signInWithCustomToken(auth, __initial_auth_token);
           } catch (tokenErr) {
-            console.warn("Custom token invalid or mismatched, falling back to anonymous login...");
             await signInAnonymously(auth);
           }
         } else {
@@ -234,7 +234,6 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
-        // استخدام مسار Firestore الصحيح حسب القاعدة رقم 1
         const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
         try {
           const userSnap = await getDoc(userRef);
@@ -250,9 +249,7 @@ export default function App() {
             await setDoc(userRef, initial);
             setProfileData(initial);
           }
-        } catch (e) {
-          console.error("Profile fetch error:", e);
-        }
+        } catch (e) { console.error("Profile fetch error:", e); }
       } else {
         setUser(null);
       }
@@ -260,25 +257,22 @@ export default function App() {
     return () => unsubscribe();
   }, [language]);
 
-  // 2. مستمعات البيانات في الوقت الفعلي
+  // 2. مستمعات البيانات
   useEffect(() => {
     if (!user) return;
 
-    // جلب التغريدات العامة
     const tweetsCol = collection(db, 'artifacts', appId, 'public', 'data', 'tweets');
     const unsubTweets = onSnapshot(tweetsCol, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setTweets(list.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
     }, (err) => console.error("Tweets listener error:", err));
 
-    // جلب قائمة المستخدمين للاقتراحات
     const usersCol = collection(db, 'artifacts', appId, 'public', 'data', 'all_users');
     const unsubUsers = onSnapshot(usersCol, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setUsersList(list.filter(u => u.id !== user.uid));
     }, (err) => console.error("Users list listener error:", err));
 
-    // جلب قائمة المتابعين
     const followingCol = collection(db, 'artifacts', appId, 'users', user.uid, 'following');
     const unsubFollow = onSnapshot(followingCol, (snap) => {
       setFollowingIds(snap.docs.map(d => d.id));
@@ -373,7 +367,9 @@ export default function App() {
     setView('tweetDetail');
     if (user) {
       const ref = doc(db, 'artifacts', appId, 'public', 'data', 'tweets', tweet.id);
-      await updateDoc(ref, { views: increment(1) });
+      try {
+        await updateDoc(ref, { views: increment(1) });
+      } catch (e) { console.warn("View count update failed - doc might be missing"); }
     }
   };
 
@@ -520,7 +516,7 @@ export default function App() {
                 </div>
               </div>
               <div className="divide-y divide-gray-500/10">
-                {tweets.map(tweet => <TweetItem key={tweet.id} tweet={tweet} />)}
+                {tweets.length > 0 ? tweets.map(tweet => <TweetItem key={tweet.id} tweet={tweet} />) : <p className="text-center py-20 text-gray-500">{t.noTweets}</p>}
               </div>
             </div>
           )}
@@ -601,35 +597,45 @@ export default function App() {
             </div>
           )}
 
-          {view === 'tweetDetail' && selectedTweet && (
+          {view === 'tweetDetail' && (
              <div className="p-6 animate-in slide-in-from-start-6">
                 <button onClick={() => setView('feed')} className="mb-6 p-2 hover:bg-gray-500/10 rounded-full transition-colors"><ChevronLeft /></button>
-                <div className="flex gap-4 items-center mb-6">
-                   <img src={selectedTweet.avatar} className="w-14 h-14 rounded-full border-2 border-[#38B6FF] object-cover shadow-md" alt="a" />
-                   <div><p className="font-black text-lg">{selectedTweet.userName}</p><p className="text-gray-500 text-sm">@{selectedTweet.userId?.substring(0,6)}</p></div>
-                </div>
-                <p className="text-2xl leading-snug mb-6 font-medium whitespace-pre-wrap">{selectedTweet.text}</p>
-                {selectedTweet.tweetImage && <img src={selectedTweet.tweetImage} className="w-full rounded-3xl mb-6 shadow-sm border border-gray-500/10" alt="m" />}
-                <div className="py-4 border-y border-gray-500/10 flex gap-8 text-gray-500 text-xs font-bold uppercase tracking-widest">
-                  <span><strong className={isDarkMode ? 'text-white' : 'text-black'}>{selectedTweet.views || 0}</strong> {t.views}</span>
-                  <span><strong className={isDarkMode ? 'text-white' : 'text-black'}>{selectedTweet.likes || 0}</strong> {language === 'ar' ? 'إعجاب' : 'Likes'}</span>
-                  <span><strong className={isDarkMode ? 'text-white' : 'text-black'}>{selectedTweet.replies?.length || 0}</strong> {t.replies}</span>
-                </div>
-                <div className="mt-8 flex gap-4">
-                  <img src={profileData.avatar} className="w-10 h-10 rounded-full object-cover" alt="me" />
-                  <div className="flex-1 relative">
-                    <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)} placeholder={t.writeComment} className={`w-full p-4 pr-12 rounded-2xl border outline-none focus:border-[#38B6FF] transition-all ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-100 border-gray-200'}`} onKeyPress={e => e.key === 'Enter' && addComment()} />
-                    <button onClick={addComment} disabled={!user} className="absolute left-3 top-3 text-[#38B6FF] p-1 hover:bg-[#38B6FF]/10 rounded-full transition-colors"><Send size={20} className={isRtl ? 'rotate-180' : ''} /></button>
-                  </div>
-                </div>
-                <div className="mt-8 space-y-6 pb-10">
-                  {(selectedTweet.replies || []).map((reply, i) => (
-                    <div key={i} className="flex gap-4 animate-in fade-in">
-                      <img src={reply.avatar} className="w-10 h-10 rounded-full object-cover shadow-sm" alt="r" />
-                      <div className={`flex-1 p-4 rounded-2xl ${isDarkMode ? 'bg-gray-800/40' : 'bg-gray-100 shadow-sm'}`}><div className="flex justify-between items-center mb-1"><span className="font-bold text-sm">{reply.userName}</span><span className="text-[10px] text-gray-500">{new Date(reply.timestamp).toLocaleTimeString(language)}</span></div><p className="text-[16px] leading-relaxed">{reply.text}</p></div>
+                {selectedTweet ? (
+                  <>
+                    <div className="flex gap-4 items-center mb-6">
+                       <img src={selectedTweet.avatar} className="w-14 h-14 rounded-full border-2 border-[#38B6FF] object-cover shadow-md" alt="a" />
+                       <div><p className="font-black text-lg">{selectedTweet.userName}</p><p className="text-gray-500 text-sm">@{selectedTweet.userId?.substring(0,6)}</p></div>
                     </div>
-                  )).reverse()}
-                </div>
+                    <p className="text-2xl leading-snug mb-6 font-medium whitespace-pre-wrap">{selectedTweet.text}</p>
+                    {selectedTweet.tweetImage && <img src={selectedTweet.tweetImage} className="w-full rounded-3xl mb-6 shadow-sm border border-gray-500/10" alt="m" />}
+                    <div className="py-4 border-y border-gray-500/10 flex gap-8 text-gray-500 text-xs font-bold uppercase tracking-widest">
+                      <span><strong className={isDarkMode ? 'text-white' : 'text-black'}>{selectedTweet.views || 0}</strong> {t.views}</span>
+                      <span><strong className={isDarkMode ? 'text-white' : 'text-black'}>{selectedTweet.likes || 0}</strong> {language === 'ar' ? 'إعجاب' : 'Likes'}</span>
+                      <span><strong className={isDarkMode ? 'text-white' : 'text-black'}>{selectedTweet.replies?.length || 0}</strong> {t.replies}</span>
+                    </div>
+                    <div className="mt-8 flex gap-4">
+                      <img src={profileData.avatar} className="w-10 h-10 rounded-full object-cover" alt="me" />
+                      <div className="flex-1 relative">
+                        <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)} placeholder={t.writeComment} className={`w-full p-4 pr-12 rounded-2xl border outline-none focus:border-[#38B6FF] transition-all ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-100 border-gray-200'}`} onKeyPress={e => e.key === 'Enter' && addComment()} />
+                        <button onClick={addComment} disabled={!user} className="absolute left-3 top-3 text-[#38B6FF] p-1 hover:bg-[#38B6FF]/10 rounded-full transition-colors"><Send size={20} className={isRtl ? 'rotate-180' : ''} /></button>
+                      </div>
+                    </div>
+                    <div className="mt-8 space-y-6 pb-10">
+                      {(selectedTweet.replies || []).map((reply, i) => (
+                        <div key={i} className="flex gap-4 animate-in fade-in">
+                          <img src={reply.avatar} className="w-10 h-10 rounded-full object-cover shadow-sm" alt="r" />
+                          <div className={`flex-1 p-4 rounded-2xl ${isDarkMode ? 'bg-gray-800/40' : 'bg-gray-100 shadow-sm'}`}><div className="flex justify-between items-center mb-1"><span className="font-bold text-sm">{reply.userName}</span><span className="text-[10px] text-gray-500">{new Date(reply.timestamp).toLocaleTimeString(language)}</span></div><p className="text-[16px] leading-relaxed">{reply.text}</p></div>
+                        </div>
+                      )).reverse()}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-center py-20">
+                    <FileQuestion className="w-20 h-20 text-gray-500 mx-auto mb-4" />
+                    <h3 className="text-2xl font-black mb-2">{t.notFoundTitle}</h3>
+                    <p className="text-gray-500">{t.notFoundMessage}</p>
+                  </div>
+                )}
              </div>
           )}
         </main>
